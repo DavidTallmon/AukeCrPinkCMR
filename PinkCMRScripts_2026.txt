@@ -1,0 +1,186 @@
+
+##### 2026 Pink CMR Scripts - 2016-2025 Dataset - verbose scripts used for analysis - don't run this section again - may change results w/ rnd selection per day
+# Start w/ data from Josh (includes density, temp, length, mark date, recap date) pared down to recovered individuals
+# Explore data relationships
+
+setwd("C:/Users/david/OneDrive/Desktop/AukeCr_PinkCMR")
+
+pkgs <- c("broom","broom.mixed","dotwhisker","dplyr","car","forcats","lubridate","tidyverse","TMB","readr","ggplot2","ggridges","ggeffects","ggstats","ggcorrplot","GGally","glmmTMB","lattice", "gridExtra","MASS","parameters","performance","readxl","MuMIn","purrr","see","tidyr")
+lapply(pkgs, library, character.only = TRUE)
+
+spawn <- read_csv("./Data/PinkCMRInput.csv")
+
+spawn$fyear <- factor(spawn$Year)  
+
+############# Model Code ###############
+#Egg.TMBglmmnb <- glmmTMB(EggMass ~ Arrival + DaysFW + Length + Density + Temp + (1|fyear), family = nbinom1, data = spawn)  #AIC 4564.5
+
+Egg.TMBglmmzi1 <- glmmTMB(EggMass~ Arrival + DaysFW + Length + Density + Temp + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.FLeDT <- glmmTMB(EggMass~ DaysFW + Length + Density + Temp + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.ALeDT <- glmmTMB(EggMass~ Arrival + Length + Density + Temp + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.LeDT <- glmmTMB(EggMass~ Length + Density + Temp + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.ALeT <- glmmTMB(EggMass~ Arrival + Length + Temp + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.ADLe <- glmmTMB(EggMass~ Arrival + Density + Length + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.ADT <- glmmTMB(EggMass~ Arrival + Density + Temp + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.AT <- glmmTMB(EggMass~ Arrival + Temp + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.DLe <- glmmTMB(EggMass~ Density + Length + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.LeT <- glmmTMB(EggMass~ Length + Temp + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.DT <- glmmTMB(EggMass~ Density + Temp + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.FLe <- glmmTMB(EggMass~ DaysFW + Length + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+Egg.Le <- glmmTMB(EggMass~ Length + (1|fyear), data = spawn, family = nbinom1, ziformula = ~1) 
+
+
+############## Model AICw ##################
+
+compare_performance(Egg.TMBglmmzi1, Egg.FLeDT, Egg.ALeDT, Egg.LeDT, Egg.ALeT, Egg.ADLe, Egg.ADT, Egg.AT, Egg.DLe, Egg.LeT, Egg.DT, Egg.FLe, Egg.Le, metrics = "AICc")
+
+######## Model Parameter Presentations #####
+#### Table of back transformed parameter estimates
+mods <- list(
+  "Length + Temp" = Egg.LeT,
+  "Arrival + Length + Temp" = Egg.ALeT,
+  "Length + Density + Temp" = Egg.LeDT
+)
+
+coef_table <- map_dfr(
+  names(mods),
+  function(m) {
+    tidy(mods[[m]],
+         effects = "fixed",
+         component = "cond",
+         conf.int = TRUE) %>%
+      mutate(
+        Model = m,
+        Estimate_BT = exp(estimate),
+        Lower_BT = exp(conf.low),
+        Upper_BT = exp(conf.high)
+      ) %>%
+      dplyr::select(
+        Model,
+        term,
+        Estimate_BT,
+        Lower_BT,
+        Upper_BT,
+        p.value
+      )
+  }
+)
+
+wide_table <- coef_table %>%
+  mutate(
+    Effect = sprintf(
+      "%.3f (%.3f, %.3f)",
+      Estimate_BT,
+      Lower_BT,
+      Upper_BT
+    )
+  ) %>%
+  dplyr::select(Model, term, Effect) %>%
+  pivot_wider(
+    names_from = Model,
+    values_from = Effect
+  )
+print(wide_table)
+
+#use r2 and nakagawa's r2 from performance to get conditional r2 for count model
+r2_nakagawa(Egg.LeT, model_component = "conditional")  #includes just the count (conditional) process, not zero inflation
+
+##modified below from what was found here https://cran.r-project.org/web/packages/glmmTMB/vignettes/model_evaluation.pdf
+##exponentiated version, reset to 1 baseline instead of 0
+
+tidy_irr <- bind_rows(
+  tidy(Egg.LeT, effects = "fixed", component = "cond", exponentiate = TRUE, conf.int = TRUE) %>%
+    mutate(Model = "Best Model"),
+
+  tidy(Egg.ALeT, effects = "fixed", component = "cond", exponentiate = TRUE, conf.int = TRUE) %>%
+    mutate(Model = "Second Best Model"),
+
+  tidy(Egg.LeDT, effects = "fixed", component = "cond", exponentiate = TRUE, conf.int = TRUE) %>%
+    mutate(Model = "Third Best Model")
+) %>%
+    filter(term != "(Intercept)") %>%
+    rename(
+      Term = term,
+      Estimate = estimate
+    ) %>%
+  mutate(Variable = forcats::fct_rev(factor(Term)))
+
+ggplot(tidy_irr,
+       aes(x = Estimate,
+           y = Variable,
+           xmin = conf.low,
+           xmax = conf.high)) +
+  geom_vline(xintercept = 1,
+             linetype = "dashed",
+             color = "grey50") +
+  geom_errorbarh(width = 0.2) +
+  geom_point(size = 2) +
+  facet_grid(Model ~ ., scales = "free_y", space = "free_y") +
+  scale_x_continuous(
+      breaks = function(x) sort(unique(c(pretty(x), 1))),
+      labels = scales::label_number(accuracy = 0.01)
+  ) +
+  labs(
+    title = "Conditional Fixed Effects",
+    x = "Multiplier Effect Size",
+    y = "Variable"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    strip.text.y = element_text(face = "bold"),
+    strip.background = element_rect(fill = "grey95", color = NA)
+  )
+  
+
+######### Initial Data Visualization, Error, & Assumption Checking #####
+################################################################
+hist(spawn$EggMass)
+
+boxplot(EggMass ~ factor(Year),
+	varwidth = FALSE, ylim = c(0,420), xlab = "Year",
+        ylab = "Egg Mass Retention", 
+	data = spawn)
+
+#Outlier plots - find code for book at https://rpubs.com/bellj39/1111336
+
+op <- par(mfrow=c(4,2), mar=c(1,1,0.75,0.75))
+dotchart(spawn$EggMass, main= "EggRetention", group=spawn$fyear)
+plot(0,0, type = "n", axes = F)
+dotchart(spawn$Arrival, main="Arrival", group = spawn$fyear)
+dotchart(spawn$DaysFW, main = "DaysFW", group = spawn$fyear)
+dotchart(spawn$Length, main = "Length", group = spawn$fyear)  		
+dotchart(spawn$Temp, main = "Temp", group = spawn$fyear)
+dotchart(spawn$Density, main = "Density", group = spawn$fyear)
+
+###########################
+#graph to check for collinearity 
+ggpair.setup <- spawn[,c("Arrival","DaysFW","Length","Temp","Density")]	#looks ok,
+ggpairs(ggpair.setup, columns = 1:5) +
+        theme(axis.text.x= element_blank(),
+	      axis.ticks.x=element_blanks())
+
+###########################
+#check for variance inflation - want values < 3.0 according to Zuur 2007 p 255 (uses corvif func instead); for code https://rpubs.com/bellj39/1111336
+vifchecklm <-lm(EggMass~., data=ggpair.setup)								
+vifresults <- car::vif(vifchecklm)
+print(vifresults)
+
+##########################
+#Outlier test using DHARMa w/ best fitting model
+library(DHARMa)
+Egg_zi1sims <-simulateResiduals(Egg.LeT)  #w/ best model for testing
+testOutliers(Egg_zi1sims, type = "bootstrap", plot = "TRUE")
+plot(Egg_zi1sims)				# or explore TMB.SurvGlob
+
+##########################
+#Test for autocorr
+library(nlme)
+M1 <- gls(EggMass ~ Arrival + DaysFW + Length + Density + Temp + fyear, data = spawn)
+summary(M1)
+E1 <- residuals(M1, type = "normalized")
+acf(E1)													
+pacf(E1)
+
+##########################
+
